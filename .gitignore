@@ -1,0 +1,16 @@
+# 민감 정보
+.eeprom_pw.json
+
+# 설정 파일 (개인 환경에 따라 다름)
+.cmis_config.json
+
+# 로그
+crash.log
+*.log
+
+# 임시/내보내기 파일
+eeprom_export.txt
+
+# Python 캐시
+__pycache__/
+*.pyc
