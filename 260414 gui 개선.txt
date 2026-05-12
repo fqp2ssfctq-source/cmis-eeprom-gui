@@ -1,2 +1,2 @@
-1. 가로 스크롤 없음
-2. 
+1. 다른 page도 오류가 없는지 검토해 줘
+2. filed name과 description이 cmis 5.2와 다른데 왜 그런거지? 다른 page도 5.2와 동일하게 update 해줘

@@ -14,3 +14,11 @@ eeprom_export.txt
 # Python 캐시
 __pycache__/
 *.pyc
+
+# PyInstaller 빌드 결과물
+build/
+dist/
+*.spec
+
+# 데이터 파일
+*.xlsx
