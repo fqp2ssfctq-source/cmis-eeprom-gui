@@ -1568,6 +1568,8 @@ class App(tk.Tk):
         self._cmp_ref_loaded=False
         self._cmp_dut_loaded=False   # B1: DUT EEPROM 로드 여부
         self._cmp_result_cache=[]  # 내보내기용 전체 결과
+        self._last_dir=""
+        self._load_logo()
         self._build_ui()
         self._apply_theme_full()
         self._refresh_ports()
@@ -1577,6 +1579,18 @@ class App(tk.Tk):
         # hidapi 자동 설치 완료 시 팝업 안내
         if HID_OK:
             self.after(800, self._check_hid_installed)
+
+    def _load_logo(self):
+        self._logo_tb=None; self._logo_ab=None
+        try:
+            path=os.path.join(os.path.dirname(os.path.abspath(__file__)),"lightron_logo.png")
+            if not os.path.exists(path): return
+            img=tk.PhotoImage(file=path)
+            w,h=img.width(),img.height()
+            self._logo_raw=img
+            f_tb=max(1,h//28); self._logo_tb=img.subsample(f_tb,f_tb)
+            f_ab=max(1,h//50); self._logo_ab=img.subsample(f_ab,f_ab)
+        except Exception: pass
 
     def _on_close(self):
         """종료 시 설정 저장 후 창 닫기"""
@@ -1594,11 +1608,18 @@ class App(tk.Tk):
                                  fg="#185FA5",cursor="hand2")
         self.ver_label.pack(side=tk.LEFT,padx=2)
         self.ver_label.bind("<Button-1>",lambda e:self._show_ver_dialog())
+        # 회사 로고 및 팀 정보
+        sep=tk.Frame(tb,width=1,bg="#b0ccc6"); sep.pack(side=tk.RIGHT,fill=tk.Y,pady=6,padx=4)
+        cf=tk.Frame(tb); cf.pack(side=tk.RIGHT,padx=(4,12))
+        if self._logo_tb:
+            tk.Label(cf,image=self._logo_tb,bd=0).pack(side=tk.LEFT,padx=(0,6))
+        tk.Label(cf,text="솔루션개발팀",font=("Malgun Gothic",8)).pack(side=tk.LEFT)
 
         self.tab_frame=tk.Frame(self,height=34)
         self.tab_frame.pack(fill=tk.X); self.tab_frame.pack_propagate(False)
         self._tab_btns={}
         for name,label in[("connect","연결"),("viewer","EEPROM 뷰어"),
+                           ("ddm","DDM Read"),
                            ("compare","비교"),
                            ("log","로그"),("about","정보")]:
             btn=tk.Button(self.tab_frame,text=label,relief=tk.FLAT,bd=0,
@@ -1609,9 +1630,11 @@ class App(tk.Tk):
         self.page_container=tk.Frame(self)
         self.page_container.pack(fill=tk.BOTH,expand=True)
         self._pages={}
-        for name in["connect","viewer","compare","log","about"]:
+        self._ddm_auto_id=None
+        for name in["connect","viewer","ddm","compare","log","about"]:
             f=tk.Frame(self.page_container); self._pages[name]=f
             {"connect":self._build_connect,"viewer":self._build_viewer,
+             "ddm":self._build_ddm,
              "compare":self._build_compare,
              "log":self._build_log,
              "about":self._build_about}[name](f)
@@ -1920,7 +1943,7 @@ class App(tk.Tk):
     # ── REF 파일 로드 ─────────────────────────────────────
     def _cmp_load_ref(self):
         """기준 EEPROM 파일 로드 (파일만, 장치 읽기 없음)"""
-        path = filedialog.askopenfilename(
+        path = self._askopen(
             title="기준(REF) EEPROM 파일 선택",
             filetypes=[("EEPROM 파일","*.txt *.xlsx *.xls"),
                        ("Text","*.txt"),("Excel","*.xlsx *.xls"),("All","*.*")])
@@ -2112,7 +2135,7 @@ class App(tk.Tk):
             messagebox.showwarning("결과 없음","먼저 DUT를 읽어 비교를 실행하세요.")
             return
         ext = ".csv" if fmt == "csv" else ".txt"
-        path = filedialog.asksaveasfilename(
+        path = self._asksave(
             defaultextension=ext,
             initialfile=f"compare_{time.strftime('%Y%m%d_%H%M%S')}{ext}",
             filetypes=[(fmt.upper(), f"*{ext}"), ("All","*.*")])
@@ -2134,6 +2157,111 @@ class App(tk.Tk):
         self._log(f"비교 결과 내보내기: {path}")
         messagebox.showinfo("저장 완료", f"저장됨:\n{path}")
 
+    # ── DDM Read 탭 ──────────────────────────────────────
+    def _build_ddm(self,p):
+        """DDM Read 탭: 실시간 광 진단값 표시"""
+        # 상단 컨트롤바
+        bar=tk.Frame(p); bar.pack(fill=tk.X,padx=12,pady=(10,4))
+        self.ddm_read_btn=tk.Button(bar,text="Read DDM",width=12,cursor="hand2",
+                                    command=self._ddm_read)
+        self.ddm_read_btn.pack(side=tk.LEFT,padx=(0,16))
+        tk.Label(bar,text="Auto-Refresh:").pack(side=tk.LEFT,padx=(0,4))
+        self._ddm_interval_var=tk.StringVar(value="Off")
+        for lbl in ["Off","1s","5s","10s"]:
+            tk.Radiobutton(bar,text=lbl,variable=self._ddm_interval_var,value=lbl,
+                           command=self._ddm_auto_toggle).pack(side=tk.LEFT,padx=2)
+        self._ddm_ts_lbl=tk.Label(bar,text="—",font=("Consolas",9))
+        self._ddm_ts_lbl.pack(side=tk.RIGHT)
+
+        # Module Monitors
+        mod=tk.LabelFrame(p,text=" Module Monitors ",padx=12,pady=8)
+        mod.pack(fill=tk.X,padx=12,pady=(4,6))
+        tk.Label(mod,text="Temperature:",anchor=tk.W,width=14).grid(row=0,column=0,sticky=tk.W)
+        self._ddm_temp_lbl=tk.Label(mod,text="—",anchor=tk.W,width=16,font=("Consolas",10))
+        self._ddm_temp_lbl.grid(row=0,column=1,sticky=tk.W,padx=(4,24))
+        tk.Label(mod,text="Vcc:",anchor=tk.W,width=6).grid(row=0,column=2,sticky=tk.W)
+        self._ddm_vcc_lbl=tk.Label(mod,text="—",anchor=tk.W,width=14,font=("Consolas",10))
+        self._ddm_vcc_lbl.grid(row=0,column=3,sticky=tk.W)
+
+        # Lane Monitors
+        lf=tk.LabelFrame(p,text=" Lane Monitors (P03h) ",padx=8,pady=8)
+        lf.pack(fill=tk.BOTH,expand=True,padx=12,pady=(0,12))
+        hdrs=["Lane","Tx Power","Rx Power","Tx Bias"]
+        ws=[8,16,16,16]
+        for col,(h,w) in enumerate(zip(hdrs,ws)):
+            tk.Label(lf,text=h,width=w,anchor=tk.CENTER,
+                     font=("Consolas",10,"bold"),relief=tk.GROOVE,
+                     bg="#2F5496",fg="white"
+                     ).grid(row=0,column=col,sticky=tk.EW,padx=1,pady=(0,2))
+        self._ddm_lane_lbls=[]
+        for lane in range(8):
+            bg="#f0f4ff" if lane%2==0 else "white"
+            tk.Label(lf,text=f"Lane {lane+1}",width=ws[0],anchor=tk.CENTER,
+                     font=("Consolas",10),bg=bg
+                     ).grid(row=lane+1,column=0,sticky=tk.EW,padx=1,pady=1)
+            row_lbls=[]
+            for col in range(1,4):
+                lbl=tk.Label(lf,text="—",width=ws[col],anchor=tk.CENTER,
+                             font=("Consolas",10),bg=bg)
+                lbl.grid(row=lane+1,column=col,sticky=tk.EW,padx=1,pady=1)
+                row_lbls.append(lbl)
+            self._ddm_lane_lbls.append(row_lbls)
+
+    def _ddm_read(self):
+        """DDM 읽기 스레드 실행"""
+        if self._device_index<0:
+            messagebox.showwarning("DDM Read","장치가 연결되지 않았습니다.\n먼저 연결 탭에서 장치를 연결하세요.")
+            return
+        self.ddm_read_btn.config(state=tk.DISABLED)
+        def task():
+            conn=None
+            try:
+                conn=self._open_conn()
+                i2c=i2c_8bit(self.i2c_addr_var.get())
+                a0=conn.read_page(i2c,0x00,128)
+                conn.set_page(3)
+                p03=conn.read_page(i2c,0x80,128)
+                conn.set_page(0)
+                self.after(0,lambda:self._ddm_update_ui(a0,p03))
+            except Exception as e:
+                self.after(0,lambda e=e:messagebox.showerror("DDM Read 오류",str(e)))
+            finally:
+                self._close_conn(conn)
+                self.after(0,lambda:self.ddm_read_btn.config(state=tk.NORMAL))
+        threading.Thread(target=task,daemon=True).start()
+
+    def _ddm_update_ui(self,a0,p03):
+        """읽어온 데이터로 DDM 탭 라벨 갱신"""
+        self._ddm_ts_lbl.config(text=f"Last read: {time.strftime('%H:%M:%S')}")
+        # Module
+        temp=s16(a0[14],a0[15])/256
+        vcc=u16(a0[16],a0[17])*0.0001
+        self._ddm_temp_lbl.config(text=f"{temp:.2f} °C")
+        self._ddm_vcc_lbl.config(text=f"{vcc:.4f} V")
+        # Lanes
+        for lane in range(8):
+            i_tx=2+lane*2; i_rx=18+lane*2
+            i_bias=34+lane*2
+            tx=uw_to_dbm(u16(p03[i_tx],p03[i_tx+1]))
+            rx=uw_to_dbm(u16(p03[i_rx],p03[i_rx+1]))
+            bias_ma=u16(p03[i_bias],p03[i_bias+1])*0.002
+            self._ddm_lane_lbls[lane][0].config(text=tx)
+            self._ddm_lane_lbls[lane][1].config(text=rx)
+            self._ddm_lane_lbls[lane][2].config(text=f"{bias_ma:.3f} mA")
+
+    def _ddm_auto_toggle(self):
+        """Auto-Refresh 라디오 버튼 변경 시 스케줄 재설정"""
+        if self._ddm_auto_id:
+            self.after_cancel(self._ddm_auto_id); self._ddm_auto_id=None
+        val=self._ddm_interval_var.get()
+        if val!="Off":
+            ms={"1s":1000,"5s":5000,"10s":10000}[val]
+            self._ddm_schedule(ms)
+
+    def _ddm_schedule(self,ms):
+        self._ddm_read()
+        self._ddm_auto_id=self.after(ms,lambda:self._ddm_schedule(ms))
+
     # ── 로그 탭 ──────────────────────────────────────────
     def _build_log(self,p):
         bar=tk.Frame(p); bar.pack(fill=tk.X,padx=12,pady=8)
@@ -2148,6 +2276,16 @@ class App(tk.Tk):
     # ── 정보 탭 ──────────────────────────────────────────
     def _build_about(self,p):
         hf=tk.Frame(p); hf.pack(fill=tk.X,padx=24,pady=(24,8))
+        # 로고 + 회사/팀 정보
+        top=tk.Frame(hf); top.pack(anchor=tk.W,pady=(0,12))
+        if self._logo_ab:
+            tk.Label(top,image=self._logo_ab,bd=0).pack(side=tk.LEFT,padx=(0,16))
+        ti=tk.Frame(top); ti.pack(side=tk.LEFT,anchor="center")
+        tk.Label(ti,text="Lightron Fiber-Optics Co., Ltd.",
+                 font=("Malgun Gothic",11,"bold")).pack(anchor=tk.W)
+        tk.Label(ti,text="솔루션개발팀",
+                 font=("Malgun Gothic",10)).pack(anchor=tk.W,pady=(2,0))
+        ttk.Separator(hf,orient=tk.HORIZONTAL).pack(fill=tk.X,pady=(0,10))
         tk.Label(hf,text=APP_NAME,font=("",16,"bold")).pack(anchor=tk.W)
         tk.Label(hf,text=f"Version {APP_VERSION}  ({APP_DATE})",font=("",10)
                  ).pack(anchor=tk.W,pady=2)
@@ -2365,6 +2503,20 @@ class App(tk.Tk):
         return os.path.join(
             os.path.dirname(os.path.abspath(__file__)),".eeprom_pw.json")
 
+    def _askopen(self,**kw):
+        if self._last_dir and os.path.isdir(self._last_dir):
+            kw.setdefault("initialdir",self._last_dir)
+        path=filedialog.askopenfilename(**kw)
+        if path: self._last_dir=os.path.dirname(path); self._save_app_config()
+        return path
+
+    def _asksave(self,**kw):
+        if self._last_dir and os.path.isdir(self._last_dir):
+            kw.setdefault("initialdir",self._last_dir)
+        path=filedialog.asksaveasfilename(**kw)
+        if path: self._last_dir=os.path.dirname(path); self._save_app_config()
+        return path
+
     def _app_config_path(self):
         import os
         return os.path.join(
@@ -2385,6 +2537,7 @@ class App(tk.Tk):
                                    for pk,s,e,var in self._exc_vars
                                    if not hasattr(var,"_default")],
                 "col_widths":     self._col_w_cache,
+                "last_dir":       self._last_dir,
             }
             with open(self._app_config_path(),"w",encoding="utf-8") as f:
                 json.dump(cfg,f,indent=2)
@@ -2424,6 +2577,7 @@ class App(tk.Tk):
             # 페이지별 열 너비
             for pk,widths in cfg.get("col_widths",{}).items():
                 if isinstance(widths,list): self._col_w_cache[pk]=widths
+            self._last_dir=cfg.get("last_dir","")
             self._log("설정 복원 완료")
         except Exception as e:
             self._log(f"설정 복원 실패: {e}")
@@ -2636,7 +2790,7 @@ class App(tk.Tk):
     def _open_file(self):
         ft=[("EEPROM 파일","*.txt *.xlsx *.xls"),("Text","*.txt"),
             ("Excel","*.xlsx *.xls"),("All","*.*")]
-        path=filedialog.askopenfilename(filetypes=ft)
+        path=self._askopen(filetypes=ft)
         if not path: return
         try:
             ext=os.path.splitext(path)[1].lower()
@@ -2658,7 +2812,7 @@ class App(tk.Tk):
     def _save_file(self):
         base=(os.path.splitext(os.path.basename(self.filename))[0]
               if self.filename else "eeprom")
-        path=filedialog.asksaveasfilename(
+        path=self._asksave(
             defaultextension=".xlsx",initialfile=base+"_edited",
             filetypes=[("Excel","*.xlsx"),("Text","*.txt"),("All","*.*")])
         if not path: return
@@ -3407,11 +3561,11 @@ class App(tk.Tk):
         if 26<=i<=40 and i%2==0:
             lane=(i-26)//2+1
             return f"L{lane}: {uw_to_dbm(u16(v[i],v[i+1]))}"
-        # ── LaserBiasTx1~8 (idx 42~57, U16 × 2µA) ─────────────────
+        # ── LaserBiasTx1~8 (idx 42~57, U16 × 2µA → mA) ───────────
         if 42<=i<=56 and i%2==0:
             lane=(i-42)//2+1
-            ma=u16(v[i],v[i+1])*2
-            return f"L{lane}: {ma} µA"
+            ma=u16(v[i],v[i+1])*0.002
+            return f"L{lane}: {ma:.3f} mA"
         # ── OpticalPowerRx1~8 (idx 58~73, U16 × 0.1µW → dBm) ─────
         if 58<=i<=72 and i%2==0:
             lane=(i-58)//2+1
@@ -3914,8 +4068,8 @@ class App(tk.Tk):
         self.log_text.config(state=tk.DISABLED)
 
     def _save_log(self):
-        path=filedialog.asksaveasfilename(defaultextension=".txt",
-                                           filetypes=[("Text","*.txt")])
+        path=self._asksave(defaultextension=".txt",
+                           filetypes=[("Text","*.txt")])
         if not path: return
         with open(path,"w") as f: f.write(self.log_text.get("1.0",tk.END))
 
