@@ -22,3 +22,6 @@ dist/
 
 # 데이터 파일
 *.xlsx
+
+# 배포용 폴더 (DLL + exe 포함)
+latest/

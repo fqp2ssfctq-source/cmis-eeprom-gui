@@ -30,12 +30,13 @@ except ImportError:
 # TYPE_BADGE/TYPE_COLOR: 버전 히스토리 표시용 배지
 #   [M]=major(하위 호환 불가), [+]=minor(기능 추가), [·]=patch(버그 수정)
 APP_NAME    = "EEPROM CMIS Writer"
-APP_VERSION = "3.5.16"
-APP_DATE    = "2026-05-11"
+APP_VERSION = "3.5.17"
+APP_DATE    = "2026-06-10"
 # ── 참조 스펙 버전 ─────────────────────────────────────────
 SPEC_CMIS   = "OIF-CMIS-05.2"       # April 27, 2022
 SPEC_SFF8024= "SFF-8024 Rev 4.13"   # July 11, 2025
 CHANGELOG = [
+    ("3.5.17","2026-06-10","fix",    "DDM Read: set_page(3→0x11) 수정 — Page 03h는 임계값, 실측 레인 모니터는 Page 11h (CMIS 5.2 Table 8-82)"),
     ("3.5.16","2026-05-11","major",  "P11h: Lane-Specific Monitors 구조로 전면 교체 (CMIS 5.2 Table 8-75/8-82)"),
     ("3.5.16","2026-05-11","major",  "P11h: DPState/OutputStatus/LaneFlags/OpticalPowerTx~Rx/LaserBias/ConfigStatus/ACS/DPInitPending"),
     ("3.5.16","2026-05-11","major",  "P10h: SCS1(Table 8-69~73) 및 LaneSpecificMasks 영역 추가 (idx 42~104)"),
@@ -1864,8 +1865,12 @@ class App(tk.Tk):
         for pk,s,e,lbl,default in _CMP_DEFAULT_EXC:
             var = tk.BooleanVar(value=default)
             self._exc_vars.append((pk, s, e, var))
+            base = 0 if pk == "a0" else 0x80
+            abs_s = s + base; abs_e = e + base
+            addr_tag = (f"{abs_s:02X}h ({abs_s})" if s == e
+                        else f"{abs_s:02X}h~{abs_e:02X}h ({abs_s}~{abs_e})")
             tk.Checkbutton(ei,
-                text=f"[{pk.upper()} {s:02X}~{e:02X}h]  {lbl}",
+                text=f"[{pk.upper()} {addr_tag}]  {lbl}",
                 variable=var, font=("Consolas",9), cursor="hand2",
                 anchor=tk.W).pack(fill=tk.X, padx=2, pady=1)
 
@@ -1916,7 +1921,7 @@ class App(tk.Tk):
                                     selectmode="browse")
         for col,hdr,w,st in [
             ("page",  "Page",     62, False),
-            ("addr",  "Addr",     80, False),
+            ("addr",  "Addr",    110, False),
             ("field", "Field",   200, True),
             ("ref",   "REF[hex]",120, False),
             ("dut",   "DUT[hex]",120, False),
@@ -2036,7 +2041,11 @@ class App(tk.Tk):
                 raise ValueError("범위 오류: 0x00~0x7F, Start ≤ End")
         except Exception as ex:
             messagebox.showerror("입력 오류", str(ex)); return
-        lbl = f"Custom [{pk.upper()} {s:02X}~{e:02X}h]"
+        base = 0 if pk == "a0" else 0x80
+        abs_s = s + base; abs_e = e + base
+        addr_tag = (f"{abs_s:02X}h ({abs_s})" if s == e
+                    else f"{abs_s:02X}h~{abs_e:02X}h ({abs_s}~{abs_e})")
+        lbl = f"Custom [{pk.upper()} {addr_tag}]"
         var = tk.BooleanVar(value=True)
         self._exc_vars.append((pk, s, e, var))
         tk.Checkbutton(self._exc_inner,
@@ -2079,10 +2088,11 @@ class App(tk.Tk):
                 dut_val  = self.cmp_dut[pk][i]
                 field    = self._cmp_field_name(pk, i)
 
+                addr_str = f"{abs_addr:02X}h ({abs_addr})"
                 if (pk, i) in skip:
                     n_skip += 1
                     if ref_val != dut_val:   # 값이 다를 때만 SKIP 행 표시
-                        row = (page_lbl, f"{abs_addr:02X}h", field,
+                        row = (page_lbl, addr_str, field,
                                h2(ref_val), h2(dut_val), "SKIP")
                         self.cmp_tv.insert("", tk.END, values=row,
                                            tags=("skip",))
@@ -2092,11 +2102,11 @@ class App(tk.Tk):
                 if ref_val == dut_val:
                     n_pass += 1
                     self._cmp_result_cache.append(
-                        (page_lbl, f"{abs_addr:02X}h", field,
+                        (page_lbl, addr_str, field,
                          h2(ref_val), h2(dut_val), "PASS"))
                 else:
                     n_fail += 1
-                    row = (page_lbl, f"{abs_addr:02X}h", field,
+                    row = (page_lbl, addr_str, field,
                            h2(ref_val), h2(dut_val), "✗ FAIL")
                     self.cmp_tv.insert("", tk.END, values=row,
                                        tags=("fail",))
@@ -2219,10 +2229,10 @@ class App(tk.Tk):
                 conn=self._open_conn()
                 i2c=i2c_8bit(self.i2c_addr_var.get())
                 a0=conn.read_page(i2c,0x00,128)
-                conn.set_page(3)
-                p03=conn.read_page(i2c,0x80,128)
+                conn.set_page(0x11)
+                p11=conn.read_page(i2c,0x80,128)
                 conn.set_page(0)
-                self.after(0,lambda:self._ddm_update_ui(a0,p03))
+                self.after(0,lambda:self._ddm_update_ui(a0,p11))
             except Exception as e:
                 self.after(0,lambda e=e:messagebox.showerror("DDM Read 오류",str(e)))
             finally:
@@ -2230,7 +2240,7 @@ class App(tk.Tk):
                 self.after(0,lambda:self.ddm_read_btn.config(state=tk.NORMAL))
         threading.Thread(target=task,daemon=True).start()
 
-    def _ddm_update_ui(self,a0,p03):
+    def _ddm_update_ui(self,a0,p11):
         """읽어온 데이터로 DDM 탭 라벨 갱신"""
         self._ddm_ts_lbl.config(text=f"Last read: {time.strftime('%H:%M:%S')}")
         # Module
@@ -2238,13 +2248,15 @@ class App(tk.Tk):
         vcc=u16(a0[16],a0[17])*0.0001
         self._ddm_temp_lbl.config(text=f"{temp:.2f} °C")
         self._ddm_vcc_lbl.config(text=f"{vcc:.4f} V")
-        # Lanes
+        # Lanes — Page 11h upper, CMIS 5.2 Table 8-82
+        # idx 26~40: OpticalPowerTx1~8, idx 42~56: LaserBiasTx1~8, idx 58~72: OpticalPowerRx1~8
         for lane in range(8):
-            i_tx=2+lane*2; i_rx=18+lane*2
-            i_bias=34+lane*2
-            tx=uw_to_dbm(u16(p03[i_tx],p03[i_tx+1]))
-            rx=uw_to_dbm(u16(p03[i_rx],p03[i_rx+1]))
-            bias_ma=u16(p03[i_bias],p03[i_bias+1])*0.002
+            i_tx   = 26 + lane * 2
+            i_bias = 42 + lane * 2
+            i_rx   = 58 + lane * 2
+            tx=uw_to_dbm(u16(p11[i_tx],p11[i_tx+1]))
+            rx=uw_to_dbm(u16(p11[i_rx],p11[i_rx+1]))
+            bias_ma=u16(p11[i_bias],p11[i_bias+1])*0.002
             self._ddm_lane_lbls[lane][0].config(text=tx)
             self._ddm_lane_lbls[lane][1].config(text=rx)
             self._ddm_lane_lbls[lane][2].config(text=f"{bias_ma:.3f} mA")
@@ -2499,9 +2511,10 @@ class App(tk.Tk):
         for v in self.page_sel_vars.values(): v.set(val)
 
     def _pw_config_path(self):
-        import os
-        return os.path.join(
-            os.path.dirname(os.path.abspath(__file__)),".eeprom_pw.json")
+        import os, sys
+        base = (os.path.dirname(sys.executable) if getattr(sys,"frozen",False)
+                else os.path.dirname(os.path.abspath(__file__)))
+        return os.path.join(base, ".eeprom_pw.json")
 
     def _askopen(self,**kw):
         if self._last_dir and os.path.isdir(self._last_dir):
@@ -2518,9 +2531,10 @@ class App(tk.Tk):
         return path
 
     def _app_config_path(self):
-        import os
-        return os.path.join(
-            os.path.dirname(os.path.abspath(__file__)),".cmis_config.json")
+        import os, sys
+        base = (os.path.dirname(sys.executable) if getattr(sys,"frozen",False)
+                else os.path.dirname(os.path.abspath(__file__)))
+        return os.path.join(base, ".cmis_config.json")
 
     def _save_app_config(self):
         """GUI 설정 저장 — 종료 시 자동 호출"""
@@ -2534,8 +2548,7 @@ class App(tk.Tk):
                 "page_sel":       {pk:v.get() for pk,v in self.page_sel_vars.items()},
                 "ref_path":       getattr(self,"_cmp_ref_path",""),
                 "exc_states":     [(pk,s,e,var.get())
-                                   for pk,s,e,var in self._exc_vars
-                                   if not hasattr(var,"_default")],
+                                   for pk,s,e,var in self._exc_vars],
                 "col_widths":     self._col_w_cache,
                 "last_dir":       self._last_dir,
             }
